@@ -44,9 +44,20 @@ def fetch_etf_holdings(api_key, etf_symbol, date="2023-09-30"):
     response = requests.get(url)
     if response.status_code == 200:
         holdings = response.json()
-        return [holding['symbol'] for holding in holdings]
+        return [(holding['symbol'], holding['name']) for holding in holdings]
     else:
         logging.error(f"Failed to fetch ETF holdings for {etf_symbol}, Status code: {response.status_code}")
+        return None
+
+def fetch_commodities_list(api_key):
+    logging.info("Fetching commodities list")
+    url = f"https://financialmodelingprep.com/api/v3/symbol/available-commodities?apikey={api_key}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        commodities = response.json()
+        return {commodity['symbol']: commodity['name'] for commodity in commodities}
+    else:
+        logging.error(f"Failed to fetch commodities list, Status code: {response.status_code}")
         return None
 
 def calculate_correlations(stock_data, commodities_data):
@@ -95,28 +106,28 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     if etf_symbol:
         holdings = fetch_etf_holdings(api_key, etf_symbol)
         if holdings:
-            stock_tickers = holdings
+            stock_tickers = [ticker for ticker, name in holdings]
+            stock_names = {ticker: name for ticker, name in holdings}
         else:
             logging.error(f"Failed to fetch holdings for ETF {etf_symbol}")
             return
+    else:
+        stock_names = {ticker: ticker for ticker in stock_tickers}
 
     if not stock_tickers:
         logging.error("No stock tickers provided")
         return
 
-    # Fetch commodities list
-    commodities_url = f"https://financialmodelingprep.com/api/v3/symbol/available-commodities?apikey={api_key}"
-    commodities_response = requests.get(commodities_url)
-    if commodities_response.status_code != 200:
-        logging.error("Failed to fetch commodities list")
+    # Fetch commodities list and their names
+    commodities_names = fetch_commodities_list(api_key)
+    if not commodities_names:
+        logging.error("No commodities fetched")
         return
-
-    commodities = commodities_response.json()
     
     # Fetch data for all stocks and commodities concurrently
     with ThreadPoolExecutor(max_workers=20) as executor:
         stock_futures = {executor.submit(fetch_stock_data, ticker.strip()): ticker.strip() for ticker in stock_tickers}
-        commodity_futures = {executor.submit(fetch_commodity_data, api_key, commodity['symbol']): commodity['symbol'] for commodity in commodities}
+        commodity_futures = {executor.submit(fetch_commodity_data, api_key, commodity): commodity for commodity in commodities_names.keys()}
         
         stocks_data = {ticker: future.result() for future, ticker in stock_futures.items() if future.result() is not None}
         commodities_data = {symbol: future.result() for future, symbol in commodity_futures.items() if future.result() is not None}
@@ -134,11 +145,11 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
         # Normalize the selected weights
         normalized_weights = selected_weights / np.sum(selected_weights)
         
-        portfolio = {stock: weight for stock, weight in zip(selected_stocks, normalized_weights)}
+        portfolio = {stock_names[stock]: weight for stock, weight in zip(selected_stocks, normalized_weights)}
         logging.info(f"Optimized portfolio: {portfolio}")
 
-        # Format portfolio weights to percentages
-        portfolio_percentages = {stock: f"{weight * 100:.2f}%" for stock, weight in portfolio.items()}
+        # Format portfolio weights to percentages and include names
+        portfolio_percentages = {f"{stock_names[stock]} ({stock})": f"{weight * 100:.2f}%" for stock, weight in zip(selected_stocks, normalized_weights)}
         print("Optimized portfolio (weights as percentages):", dict(sorted(portfolio_percentages.items(), key=lambda item: float(item[1][:-1]), reverse=True)))
 
         # Calculate internal correlation score
@@ -152,7 +163,7 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
         portfolio_data = selected_data.dot(normalized_weights).reset_index().rename(columns={0: 'Portfolio'})
         portfolio_data = portfolio_data.rename(columns={portfolio_data.columns[1]: 'Close'})
         commodity_correlations = calculate_correlations(portfolio_data, commodities_data)
-        formatted_correlations = {commodity: f"{corr:.4f}" for commodity, corr in commodity_correlations.items()}
+        formatted_correlations = {f"{commodities_names[commodity]} ({commodity})": f"{corr:.4f}" for commodity, corr in commodity_correlations.items()}
         print("Commodity correlations:", dict(sorted(formatted_correlations.items(), key=lambda item: float(item[1]), reverse=True)))
 
     else:
