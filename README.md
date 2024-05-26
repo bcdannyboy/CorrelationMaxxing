@@ -48,17 +48,17 @@
 
 1. **Using a list of stock tickers:**
    ```sh
-   python3 script.py your_api_key --tickers "AAPL, MSFT, AMZN, GOOG, FB, TSLA, NVDA, JPM, JNJ, V"
+   python3 maxxer.py your_api_key --tickers "AAPL, MSFT, AMZN, GOOG, FB, TSLA, NVDA, JPM, JNJ, V"
    ```
 
 2. **Using holdings from an ETF (SPY by default):**
    ```sh
-   python3 script.py your_api_key
+   python3 maxxer.py your_api_key
    ```
 
 3. **Using a different ETF:**
    ```sh
-   python3 script.py your_api_key --etf QQQ
+   python3 maxxer.py your_api_key --etf QQQ
    ```
 
 ## Output
