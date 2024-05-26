@@ -88,7 +88,7 @@ def optimize_portfolio(stock_data, num_stocks=10):
 def calculate_internal_correlation(corr_matrix, weights):
     return np.dot(weights.T, np.dot(corr_matrix, weights))
 
-def main(api_key, stock_tickers, etf_symbol):
+def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     logging.info("Starting main function")
     
     # If ETF symbol is provided, fetch its holdings
@@ -114,7 +114,7 @@ def main(api_key, stock_tickers, etf_symbol):
     commodities = commodities_response.json()
     
     # Fetch data for all stocks and commodities concurrently
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         stock_futures = {executor.submit(fetch_stock_data, ticker.strip()): ticker.strip() for ticker in stock_tickers}
         commodity_futures = {executor.submit(fetch_commodity_data, api_key, commodity['symbol']): commodity['symbol'] for commodity in commodities}
         
@@ -125,32 +125,35 @@ def main(api_key, stock_tickers, etf_symbol):
     combined_stock_data = pd.concat([data.set_index('Date')['Close'].rename(ticker) for ticker, data in stocks_data.items() if data is not None], axis=1).dropna()
     
     logging.info("Optimizing portfolio")
-    weights = optimize_portfolio(combined_stock_data, num_stocks=10)
+    weights = optimize_portfolio(combined_stock_data, num_stocks=num_stocks)
 
     if weights is not None:
-        selected_stocks = combined_stock_data.columns[np.argsort(weights)[-10:]]
-        selected_weights = weights[np.argsort(weights)[-10:]]
-
-        portfolio = {stock: weight for stock, weight in zip(selected_stocks, selected_weights)}
+        selected_stocks = combined_stock_data.columns[np.argsort(weights)[-num_stocks:]]
+        selected_weights = weights[np.argsort(weights)[-num_stocks:]]
+        
+        # Normalize the selected weights
+        normalized_weights = selected_weights / np.sum(selected_weights)
+        
+        portfolio = {stock: weight for stock, weight in zip(selected_stocks, normalized_weights)}
         logging.info(f"Optimized portfolio: {portfolio}")
 
         # Format portfolio weights to percentages
         portfolio_percentages = {stock: f"{weight * 100:.2f}%" for stock, weight in portfolio.items()}
-        print("Optimized portfolio (weights as percentages):", dict(sorted(portfolio_percentages.items(), key=lambda item: item[1], reverse=True)))
+        print("Optimized portfolio (weights as percentages):", dict(sorted(portfolio_percentages.items(), key=lambda item: float(item[1][:-1]), reverse=True)))
 
         # Calculate internal correlation score
         selected_data = combined_stock_data[selected_stocks]
         corr_matrix = selected_data.pct_change().dropna().corr()
-        internal_correlation = calculate_internal_correlation(corr_matrix, selected_weights)
+        internal_correlation = calculate_internal_correlation(corr_matrix, normalized_weights)
         logging.info(f"Internal correlation score: {internal_correlation:.4f}")
         print(f"Internal correlation score: {internal_correlation:.4f}")
 
         # Calculate correlations with commodities
-        portfolio_data = selected_data.dot(selected_weights).reset_index().rename(columns={0: 'Portfolio'})
+        portfolio_data = selected_data.dot(normalized_weights).reset_index().rename(columns={0: 'Portfolio'})
         portfolio_data = portfolio_data.rename(columns={portfolio_data.columns[1]: 'Close'})
         commodity_correlations = calculate_correlations(portfolio_data, commodities_data)
         formatted_correlations = {commodity: f"{corr:.4f}" for commodity, corr in commodity_correlations.items()}
-        print("Commodity correlations:", dict(sorted(formatted_correlations.items(), key=lambda item: item[1], reverse=True)))
+        print("Commodity correlations:", dict(sorted(formatted_correlations.items(), key=lambda item: float(item[1]), reverse=True)))
 
     else:
         logging.error("Failed to optimize portfolio")
@@ -160,6 +163,7 @@ if __name__ == "__main__":
     parser.add_argument('api_key', help='API key for financialmodelingprep.com')
     parser.add_argument('--tickers', type=str, help='Comma-separated list of stock tickers')
     parser.add_argument('--etf', type=str, default='SPY', help='ETF symbol to fetch holdings (default: SPY)')
+    parser.add_argument('--num_stocks', type=int, default=10, help='Number of stocks in the optimized portfolio (default: 10)')
 
     args = parser.parse_args()
     stock_tickers = args.tickers.split(',') if args.tickers else None
@@ -175,4 +179,4 @@ if __name__ == "__main__":
     else:
         print(f"Fetching data for positions within ETF: {args.etf}")
     
-    main(args.api_key, stock_tickers, args.etf)
+    main(args.api_key, stock_tickers, args.etf, args.num_stocks)
