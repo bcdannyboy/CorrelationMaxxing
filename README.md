@@ -8,8 +8,8 @@
 
 ## Features
 
-- Fetch historical price data for stocks and commodities.
-- Optimize a portfolio to balance correlation to commodities and minimize inter-stock correlation.
+- Fetch historical price data for stocks, commodities, and indices.
+- Optimize a portfolio to balance correlation to commodities/indices and minimize inter-stock correlation.
 - Option to provide individual stock tickers or use holdings from an ETF.
 - Outputs the optimized portfolio weights, internal correlation score, and commodity correlations.
 

@@ -6,12 +6,35 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from scipy.optimize import minimize
 import argparse
+import matplotlib.pyplot as plt
 
 logging.basicConfig(level=logging.ERROR)
 
 # Reduce logging for yfinance and urllib3
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
+
+CBOE_INDICES = {
+    "VIX": "^VIX",
+    "SPX": "^GSPC",
+    "DJIA": "^DJI",
+    "NDX": "^NDX",
+    "RUT": "^RUT",
+    "VXD": "^VXD",
+    "RVX": "^RVX",
+    "VXAPL": "^VXAPL",
+    "VXGOG": "^VXGOG",
+    "VXIBM": "^VXIBM",
+    "OVX": "^OVX",
+    "GVZ": "^GVZ",
+    "VXEWZ": "^VXEWZ",
+    "VXEFA": "^VXEFA",
+    "VXEEM": "^VXEEM",
+    "VXX": "^VXX",
+    "VXZ": "^VXZ",
+    "VXAZN": "^VXAZN",
+    "VXGS": "^VXGS"
+}
 
 def fetch_commodity_data(api_key, symbol):
     logging.info(f"Fetching commodity data for {symbol} from Financial Modeling Prep API")
@@ -23,11 +46,11 @@ def fetch_commodity_data(api_key, symbol):
         logging.error(f"Failed to fetch data for {symbol}, Status code: {response.status_code}")
         return None
 
-def fetch_stock_data(ticker):
+def fetch_stock_data(ticker, period="1y"):
     logging.info(f"Fetching stock data for {ticker}")
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="5y")
+        hist = stock.history(period=period)
         if hist.empty:
             logging.error(f"No data found for {ticker}, symbol may be delisted or incorrect")
             return None
@@ -77,6 +100,24 @@ def calculate_correlations(stock_data, commodities_data):
                 correlations[symbol] = corr
     return correlations
 
+def fetch_cboe_index_data():
+    cboe_data = {}
+    for name, ticker in CBOE_INDICES.items():
+        period = "5d" if ticker.startswith("^VX") else "1y"
+        data = fetch_stock_data(ticker, period=period)
+        if data is not None:
+            cboe_data[name] = data
+    return cboe_data
+
+def calculate_cboe_correlations(stock_data, cboe_data):
+    correlations = {}
+    for name, data in cboe_data.items():
+        combined = pd.merge(stock_data, data[['Date', 'Close']], on='Date', suffixes=('', f'_{name}'))
+        if not combined.empty:
+            corr = combined['Close'].corr(combined[f'Close_{name}'])
+            correlations[name] = corr
+    return correlations
+
 def optimize_portfolio(stock_data, num_stocks=10):
     returns = stock_data.pct_change().dropna()
     corr_matrix = returns.corr()
@@ -98,6 +139,16 @@ def optimize_portfolio(stock_data, num_stocks=10):
 
 def calculate_internal_correlation(corr_matrix, weights):
     return np.dot(weights.T, np.dot(corr_matrix, weights))
+
+def calculate_sharpe_ratio(portfolio_returns, risk_free_rate=0.01):
+    excess_returns = portfolio_returns - risk_free_rate / 252
+    sharpe_ratio = np.mean(excess_returns) / np.std(excess_returns) * np.sqrt(252)
+    return sharpe_ratio
+
+def backtest_portfolio(stock_data, weights):
+    portfolio_returns = stock_data.pct_change().dropna().dot(weights)
+    cumulative_returns = (1 + portfolio_returns).cumprod()
+    return portfolio_returns, cumulative_returns
 
 def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     logging.info("Starting main function")
@@ -126,11 +177,14 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     
     # Fetch data for all stocks and commodities concurrently
     with ThreadPoolExecutor(max_workers=20) as executor:
-        stock_futures = {executor.submit(fetch_stock_data, ticker.strip()): ticker.strip() for ticker in stock_tickers}
+        stock_futures = {executor.submit(fetch_stock_data, ticker.strip(), period="1y"): ticker.strip() for ticker in stock_tickers}
         commodity_futures = {executor.submit(fetch_commodity_data, api_key, commodity): commodity for commodity in commodities_names.keys()}
         
         stocks_data = {ticker: future.result() for future, ticker in stock_futures.items() if future.result() is not None}
         commodities_data = {symbol: future.result() for future, symbol in commodity_futures.items() if future.result() is not None}
+    
+    # Fetch CBOE index data
+    cboe_data = fetch_cboe_index_data()
     
     # Prepare stock data for optimization
     combined_stock_data = pd.concat([data.set_index('Date')['Close'].rename(ticker) for ticker, data in stocks_data.items() if data is not None], axis=1).dropna()
@@ -166,6 +220,24 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
         formatted_correlations = {f"{commodities_names[commodity]} ({commodity})": f"{corr:.4f}" for commodity, corr in commodity_correlations.items()}
         print("Commodity correlations:", dict(sorted(formatted_correlations.items(), key=lambda item: float(item[1]), reverse=True)))
 
+        # Calculate correlations with CBOE indices
+        cboe_correlations = calculate_cboe_correlations(portfolio_data, cboe_data)
+        formatted_cboe_correlations = {f"{name} ({CBOE_INDICES[name]})": f"{corr:.4f}" for name, corr in cboe_correlations.items()}
+        print("CBOE index correlations:", dict(sorted(formatted_cboe_correlations.items(), key=lambda item: float(item[1]), reverse=True)))
+
+        # Backtest the portfolio for 1 year
+        portfolio_returns, cumulative_returns = backtest_portfolio(selected_data, normalized_weights)
+        sharpe_ratio = calculate_sharpe_ratio(portfolio_returns)
+        logging.info(f"Sharpe ratio: {sharpe_ratio:.4f}")
+        print(f"Sharpe ratio: {sharpe_ratio:.4f}")
+
+        # Plot cumulative returns
+        plt.figure(figsize=(10, 6))
+        cumulative_returns.plot(title='Portfolio Cumulative Returns')
+        plt.xlabel('Date')
+        plt.ylabel('Cumulative Return')
+        plt.show()
+        
     else:
         logging.error("Failed to optimize portfolio")
 
