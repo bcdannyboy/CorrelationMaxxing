@@ -90,10 +90,13 @@ def calculate_correlations(stock_data, commodities_data):
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
             df.index = df.index.tz_localize(None)  # Ensure datetime format consistency
-            combined = pd.merge(stock_data, df[['close']], left_on='Date', right_index=True, how='inner')
-            if not combined.empty and 'Close' in combined.columns and 'close' in combined.columns:
-                corr = combined['Close'].corr(combined['close'])
-                correlations[symbol] = corr
+            df.rename(columns={'close': symbol}, inplace=True)
+            combined = pd.merge(stock_data, df[[symbol]], left_on='Date', right_index=True, how='inner')
+            if not combined.empty:
+                for stock in stock_data.columns:
+                    if stock in combined.columns and symbol in combined.columns:
+                        corr = combined[stock].corr(combined[symbol])
+                        correlations[(stock, symbol)] = corr
     return correlations
 
 def fetch_cboe_index_data():
@@ -116,7 +119,7 @@ def calculate_cboe_correlations(stock_data, cboe_data):
                     correlations[name] = corr
     return correlations
 
-def optimize_portfolio_mvo(stock_data, num_stocks=10):
+def optimize_portfolio_mvo(stock_data, commodity_correlations, cboe_correlations, num_stocks=10):
     # Calculate daily returns
     returns = stock_data.pct_change().dropna()
 
@@ -124,13 +127,22 @@ def optimize_portfolio_mvo(stock_data, num_stocks=10):
     mean_returns = returns.mean()
     cov_matrix = returns.cov()
 
+    # Normalize and combine commodity and CBOE index correlations
+    combined_correlations = {**commodity_correlations, **cboe_correlations}
+    combined_corr_values = np.array(list(combined_correlations.values()))
+    combined_corr_weights = combined_corr_values / np.sum(combined_corr_values) if combined_corr_values.size > 0 else np.array([0])
+
     def objective(weights):
         # Portfolio variance
         portfolio_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
         # Portfolio return
         portfolio_return = np.dot(weights, mean_returns)
-        # Objective: Minimize variance and maximize return (sharpe ratio)
-        return -portfolio_return / np.sqrt(portfolio_variance)
+        # Portfolio correlation to indices and commodities
+        portfolio_corr = 0
+        if combined_corr_weights.size == len(weights):
+            portfolio_corr = np.dot(combined_corr_weights, weights)
+        # Objective: Minimize variance and maximize return (sharpe ratio), while considering correlation
+        return -portfolio_return / np.sqrt(portfolio_variance) + portfolio_corr
 
     # Constraints and bounds
     constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
@@ -184,9 +196,9 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     logging.info("Starting main function")
     
     # If ETF symbol is provided, fetch its holdings
-    if (etf_symbol):
+    if etf_symbol:
         holdings = fetch_etf_holdings(api_key, etf_symbol)
-        if (holdings):
+        if holdings:
             stock_tickers = [ticker for ticker, name in holdings]
             stock_names = {ticker: name for ticker, name in holdings}
         else:
@@ -195,13 +207,13 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     else:
         stock_names = {ticker: ticker for ticker in stock_tickers}
 
-    if (not stock_tickers):
+    if not stock_tickers:
         logging.error("No stock tickers provided")
         return
 
     # Fetch commodities list and their names
     commodities_names = fetch_commodities_list(api_key)
-    if (not commodities_names):
+    if not commodities_names:
         logging.error("No commodities fetched")
         return
     
@@ -217,7 +229,7 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     valid_tickers = [ticker for ticker, data in stocks_data.items() if data is not None]
     combined_stock_data = pd.concat([stocks_data[ticker].set_index('Date')['Close'].rename(ticker) for ticker in valid_tickers], axis=1).dropna()
 
-    if (combined_stock_data.empty):
+    if combined_stock_data.empty:
         logging.error("No valid stock data available after filtering")
         return
     
@@ -230,7 +242,7 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     
     # Optimize portfolios using both strategies
     logging.info("Optimizing portfolio using Mean-Variance Optimization")
-    indices_mvo, weights_mvo = optimize_portfolio_mvo(combined_stock_data, num_stocks=num_stocks)
+    indices_mvo, weights_mvo = optimize_portfolio_mvo(combined_stock_data, commodity_correlations, cboe_correlations, num_stocks=num_stocks)
     
     logging.info("Optimizing portfolio using minimum correlation")
     indices_min_corr, weights_min_corr = optimize_portfolio_min_corr(combined_stock_data, num_stocks=num_stocks)
