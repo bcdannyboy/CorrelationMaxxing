@@ -7,6 +7,10 @@ import numpy as np
 from scipy.optimize import minimize
 import argparse
 import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import itertools
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -192,6 +196,79 @@ def backtest_portfolio(stock_data, weights):
     cumulative_returns = (1 + portfolio_returns).cumprod()
     return portfolio_returns, cumulative_returns
 
+def generate_random_portfolios(stock_data, num_portfolios=100000, num_stocks=10):
+    returns = stock_data.pct_change().dropna()
+    mean_returns = returns.mean()
+    cov_matrix = returns.cov()
+    
+    portfolio_results = []
+    
+    for _ in range(num_portfolios):
+        weights = np.random.random(len(mean_returns))
+        weights /= np.sum(weights)
+        portfolio_return = np.dot(weights, mean_returns)
+        portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+        sharpe_ratio = portfolio_return / portfolio_volatility
+        portfolio_results.append((sharpe_ratio, portfolio_return, portfolio_volatility, weights))
+        
+    return portfolio_results
+
+def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations, num_stocks=10):
+    # Generate a large number of random portfolios
+    portfolios = generate_random_portfolios(stock_data, num_portfolios=100000, num_stocks=num_stocks)
+
+    # Prepare training data for Random Forest
+    X = []
+    y = []
+    for sharpe_ratio, portfolio_return, portfolio_volatility, weights in portfolios:
+        X.append(list(weights))
+        y.append(sharpe_ratio)
+    
+    X = np.array(X)
+    y = np.array(y)
+    
+    # Split data into training and test sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Train Random Forest Regressor with extensive parameters
+    rf = RandomForestRegressor(
+        n_estimators=10000,
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        max_features='auto',
+        n_jobs=-1,
+        random_state=42,
+        bootstrap=True,
+        oob_score=True,
+        verbose=1
+    )
+    rf.fit(X_train, y_train)
+    
+    # Predict on test set
+    y_pred = rf.predict(X_test)
+    
+    # Calculate RMSE
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    logging.info(f"Random Forest RMSE: {rmse:.4f}")
+    
+    # Optimize portfolio using Random Forest predictions
+    best_sharpe_ratio = -np.inf
+    best_weights = None
+    
+    for i in range(len(X_test)):
+        sharpe_ratio = y_pred[i]
+        weights = X_test[i]
+        if sharpe_ratio > best_sharpe_ratio:
+            best_sharpe_ratio = sharpe_ratio
+            best_weights = weights
+            
+    # Select the top num_stocks stocks
+    indices = np.argsort(best_weights)[-num_stocks:]
+    weights = best_weights[indices]
+    
+    return indices, weights / np.sum(weights)  # Normalize the weights
+
 def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     logging.info("Starting main function")
     
@@ -247,6 +324,9 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
     logging.info("Optimizing portfolio using minimum correlation")
     indices_min_corr, weights_min_corr = optimize_portfolio_min_corr(combined_stock_data, num_stocks=num_stocks)
 
+    logging.info("Optimizing portfolio using Random Forest")
+    indices_rf, weights_rf = optimize_portfolio_rf(combined_stock_data, commodity_correlations, cboe_correlations, num_stocks=num_stocks)
+
     if weights_mvo is not None:
         selected_stocks_mvo = combined_stock_data.columns[indices_mvo]
         
@@ -293,12 +373,37 @@ def main(api_key, stock_tickers=None, etf_symbol=None, num_stocks=10):
         logging.info(f"Sharpe ratio (Min Correlation): {sharpe_ratio_min_corr:.4f}")
         print(f"Sharpe ratio (Min Correlation): {sharpe_ratio_min_corr:.4f}")
 
-    # Plot cumulative returns for both strategies
+    if weights_rf is not None:
+        selected_stocks_rf = combined_stock_data.columns[indices_rf]
+        
+        portfolio_rf = {stock_names[stock]: weight for stock, weight in zip(selected_stocks_rf, weights_rf)}
+        logging.info(f"Optimized portfolio (Random Forest): {portfolio_rf}")
+
+        # Format portfolio weights to percentages and include names
+        portfolio_percentages_rf = {f"{stock_names[stock]} ({stock})": f"{weight * 100:.2f}%" for stock, weight in zip(selected_stocks_rf, weights_rf)}
+        print("Optimized portfolio (Random Forest) (weights as percentages):", dict(sorted(portfolio_percentages_rf.items(), key=lambda item: float(item[1][:-1]), reverse=True)))
+
+        # Calculate internal correlation score
+        selected_data_rf = combined_stock_data[selected_stocks_rf]
+        corr_matrix_rf = selected_data_rf.pct_change().dropna().corr()
+        internal_correlation_rf = calculate_internal_correlation(corr_matrix_rf, weights_rf)
+        logging.info(f"Internal correlation score (Random Forest): {internal_correlation_rf:.4f}")
+        print(f"Internal correlation score (Random Forest): {internal_correlation_rf:.4f}")
+
+        # Backtest the portfolio for 1 year
+        portfolio_returns_rf, cumulative_returns_rf = backtest_portfolio(selected_data_rf, weights_rf)
+        sharpe_ratio_rf = calculate_sharpe_ratio(portfolio_returns_rf)
+        logging.info(f"Sharpe ratio (Random Forest): {sharpe_ratio_rf:.4f}")
+        print(f"Sharpe ratio (Random Forest): {sharpe_ratio_rf:.4f}")
+
+    # Plot cumulative returns for all strategies
     plt.figure(figsize=(10, 6))
     if weights_mvo is not None:
         cumulative_returns_mvo.plot(label='MVO Strategy')
     if weights_min_corr is not None:
         cumulative_returns_min_corr.plot(label='Min Correlation Strategy')
+    if weights_rf is not None:
+        cumulative_returns_rf.plot(label='Random Forest Strategy')
     plt.title('Portfolio Cumulative Returns')
     plt.xlabel('Date')
     plt.ylabel('Cumulative Return')
