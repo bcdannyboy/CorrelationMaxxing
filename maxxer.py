@@ -196,32 +196,50 @@ def backtest_portfolio(stock_data, weights):
     cumulative_returns = (1 + portfolio_returns).cumprod()
     return portfolio_returns, cumulative_returns
 
-def generate_random_portfolios(stock_data, num_portfolios=100000, num_stocks=10):
-    returns = stock_data.pct_change().dropna()
-    mean_returns = returns.mean()
-    cov_matrix = returns.cov()
-    
-    portfolio_results = []
-    
-    for _ in range(num_portfolios):
-        weights = np.random.random(len(mean_returns))
-        weights /= np.sum(weights)
+def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations, num_stocks=10):
+    def calculate_portfolio_stats(weights, mean_returns, cov_matrix):
         portfolio_return = np.dot(weights, mean_returns)
         portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
         sharpe_ratio = portfolio_return / portfolio_volatility
-        portfolio_results.append((sharpe_ratio, portfolio_return, portfolio_volatility, weights))
+        return portfolio_return, portfolio_volatility, sharpe_ratio
+    
+    def calculate_portfolio_corr(weights, combined_corr_matrix):
+        return np.dot(weights.T, np.dot(combined_corr_matrix, weights))
+    
+    # Generate random portfolios
+    def generate_random_portfolios(stock_data, num_portfolios=100000):
+        returns = stock_data.pct_change().dropna()
+        mean_returns = returns.mean()
+        cov_matrix = returns.cov()
         
-    return portfolio_results
+        portfolios = []
+        
+        for _ in range(num_portfolios):
+            weights = np.random.random(len(mean_returns))
+            weights /= np.sum(weights)
+            portfolio_return, portfolio_volatility, sharpe_ratio = calculate_portfolio_stats(weights, mean_returns, cov_matrix)
+            portfolios.append((sharpe_ratio, portfolio_return, portfolio_volatility, weights))
+        
+        return portfolios
 
-def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations, num_stocks=10):
-    # Generate a large number of random portfolios
-    portfolios = generate_random_portfolios(stock_data, num_portfolios=100000, num_stocks=num_stocks)
+    portfolios = generate_random_portfolios(stock_data)
+    
+    # Combine commodity and CBOE correlations into a single matrix
+    combined_correlations = {**commodity_correlations, **cboe_correlations}
+    combined_corr_matrix = np.zeros((len(stock_data.columns), len(stock_data.columns)))
+    for (stock, corr_stock), corr_value in combined_correlations.items():
+        if stock in stock_data.columns and corr_stock in stock_data.columns:
+            i = stock_data.columns.get_loc(stock)
+            j = stock_data.columns.get_loc(corr_stock)
+            combined_corr_matrix[i, j] = corr_value
+            combined_corr_matrix[j, i] = corr_value
 
     # Prepare training data for Random Forest
     X = []
     y = []
     for sharpe_ratio, portfolio_return, portfolio_volatility, weights in portfolios:
-        X.append(list(weights))
+        portfolio_corr = calculate_portfolio_corr(weights, combined_corr_matrix)
+        X.append(np.append(weights, portfolio_corr))
         y.append(sharpe_ratio)
     
     X = np.array(X)
@@ -230,7 +248,7 @@ def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations,
     # Split data into training and test sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # Train Random Forest Regressor with extensive parameters
+    # Train Random Forest Regressor
     rf = RandomForestRegressor(
         n_estimators=100000,
         max_depth=100,
@@ -243,14 +261,11 @@ def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations,
         oob_score=True,
         verbose=2
     )
-    print("running RF Fit...")
     rf.fit(X_train, y_train)
     
-    print("running RF Predict...")
     # Predict on test set
     y_pred = rf.predict(X_test)
     
-    print("running RF RMSE...")
     # Calculate RMSE
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     logging.info(f"Random Forest RMSE: {rmse:.4f}")
@@ -261,7 +276,7 @@ def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations,
     
     for i in range(len(X_test)):
         sharpe_ratio = y_pred[i]
-        weights = X_test[i]
+        weights = X_test[i][:-1]  # Exclude the last element (portfolio correlation)
         if sharpe_ratio > best_sharpe_ratio:
             best_sharpe_ratio = sharpe_ratio
             best_weights = weights
