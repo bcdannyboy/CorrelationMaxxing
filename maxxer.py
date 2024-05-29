@@ -232,8 +232,8 @@ def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations,
     
     # Train Random Forest Regressor with extensive parameters
     rf = RandomForestRegressor(
-        n_estimators=10000,
-        max_depth=50,
+        n_estimators=100000,
+        max_depth=100,
         min_samples_split=2,
         min_samples_leaf=1,
         max_features='sqrt',
@@ -241,13 +241,16 @@ def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations,
         random_state=42,
         bootstrap=True,
         oob_score=True,
-        verbose=2  # Set verbose to 2 for more detailed output
+        verbose=2
     )
+    print("running RF Fit...")
     rf.fit(X_train, y_train)
     
+    print("running RF Predict...")
     # Predict on test set
     y_pred = rf.predict(X_test)
     
+    print("running RF RMSE...")
     # Calculate RMSE
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     logging.info(f"Random Forest RMSE: {rmse:.4f}")
