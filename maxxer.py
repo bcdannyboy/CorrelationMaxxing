@@ -250,8 +250,8 @@ def optimize_portfolio_rf(stock_data, commodity_correlations, cboe_correlations,
     
     # Train Random Forest Regressor
     rf = RandomForestRegressor(
-        n_estimators=100000,
-        max_depth=100,
+        n_estimators=10000,
+        max_depth=None,
         min_samples_split=2,
         min_samples_leaf=1,
         max_features='sqrt',
